@@ -33,7 +33,6 @@ def test_apply_long_sell_realized_gain_and_cost_basis_reset(portfolio: Portfolio
     assert snap["positions"]["AAPL"]["long"] == 0
     assert snap["positions"]["AAPL"]["long_cost_basis"] == pytest.approx(0.0)
     assert snap["realized_gains"]["AAPL"]["long"] == pytest.approx(1_000.0)
-    # Cash: initial 100k - 5k + 6k = 101k
     assert snap["cash"] == pytest.approx(101_000.0)
 
 
