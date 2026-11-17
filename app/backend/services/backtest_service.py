@@ -31,7 +31,7 @@ class BacktestService:
         initial_capital: float,
         model_name: str = "gpt-4.1",
         model_provider: str = "OpenAI",
-        request: dict = {},
+        request: Any = None,
     ):
         """
         Initialize the backtest service.
@@ -224,7 +224,10 @@ class BacktestService:
         end_date_dt = datetime.strptime(self.end_date, "%Y-%m-%d")
         start_date_dt = end_date_dt - relativedelta(years=1)
         start_date_str = start_date_dt.strftime("%Y-%m-%d")
-        api_key = self.request.api_keys.get("FINANCIAL_DATASETS_API_KEY")
+        api_keys = getattr(self.request, "api_keys", None) if self.request else None
+        if isinstance(self.request, dict):
+            api_keys = self.request.get("api_keys")
+        api_key = api_keys.get("FINANCIAL_DATASETS_API_KEY") if api_keys else None
 
         for ticker in self.tickers:
             get_prices(ticker, start_date_str, self.end_date, api_key=api_key)
@@ -248,20 +251,17 @@ class BacktestService:
 
         # Sharpe ratio
         if std_excess_return > 1e-12:
-            performance_metrics["sharpe_ratio"] = np.sqrt(252) * (mean_excess_return / std_excess_return)
+            performance_metrics["sharpe_ratio"] = float(np.sqrt(252) * (mean_excess_return / std_excess_return))
         else:
             performance_metrics["sharpe_ratio"] = 0.0
 
-        # Sortino ratio
-        negative_returns = excess_returns[excess_returns < 0]
-        if len(negative_returns) > 0:
-            downside_std = negative_returns.std()
-            if downside_std > 1e-12:
-                performance_metrics["sortino_ratio"] = np.sqrt(252) * (mean_excess_return / downside_std)
-            else:
-                performance_metrics["sortino_ratio"] = None if mean_excess_return > 0 else 0
+        # Sortino ratio (downside semi-deviation across all observations)
+        downside_diff = np.minimum(0.0, excess_returns.to_numpy(dtype=float))
+        downside_std = float(np.sqrt(np.mean(np.square(downside_diff))))
+        if downside_std > 1e-12:
+            performance_metrics["sortino_ratio"] = float(np.sqrt(252) * (mean_excess_return / downside_std))
         else:
-            performance_metrics["sortino_ratio"] = None if mean_excess_return > 0 else 0
+            performance_metrics["sortino_ratio"] = 0.0
 
         # Maximum drawdown
         rolling_max = values_df["Portfolio Value"].cummax()
@@ -269,7 +269,7 @@ class BacktestService:
 
         if len(drawdown) > 0:
             min_drawdown = drawdown.min()
-            performance_metrics["max_drawdown"] = min_drawdown * 100
+            performance_metrics["max_drawdown"] = float(min_drawdown * 100)
 
             if min_drawdown < 0:
                 performance_metrics["max_drawdown_date"] = drawdown.idxmin().strftime("%Y-%m-%d")
@@ -284,8 +284,8 @@ class BacktestService:
         Run the backtest asynchronously with optional progress callbacks.
         Uses the pre-compiled graph for trading decisions.
         """
-        # Pre-fetch all data at the start
-        self.prefetch_data()
+        # Pre-fetch all data without blocking the event loop
+        await asyncio.to_thread(self.prefetch_data)
 
         dates = pd.date_range(self.start_date, self.end_date, freq="B")
         performance_metrics = {
@@ -333,12 +333,14 @@ class BacktestService:
 
                 for ticker in self.tickers:
                     try:
-                        price_data = get_price_data(ticker, previous_date_str, current_date_str)
+                        price_data = await asyncio.to_thread(
+                            get_price_data, ticker, previous_date_str, current_date_str
+                        )
                         if price_data.empty:
                             missing_data = True
                             break
                         current_prices[ticker] = price_data.iloc[-1]["close"]
-                    except Exception as e:
+                    except Exception:
                         missing_data = True
                         break
 
@@ -374,7 +376,7 @@ class BacktestService:
                 
                 # Parse the decisions from the graph result
                 if result and result.get("messages"):
-                    decisions = parse_hedge_fund_response(result["messages"][-1].content)
+                    decisions = parse_hedge_fund_response(result["messages"][-1].content) or {}
                     analyst_signals = result.get("data", {}).get("analyst_signals", {})
                 else:
                     decisions = {}

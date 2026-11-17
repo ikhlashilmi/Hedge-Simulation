@@ -196,7 +196,7 @@ def generate_trading_decision(
         # If only 'hold' key exists, there is no trade possible
         if set(aa.keys()) == {"hold"}:
             prefilled_decisions[t] = PortfolioDecision(
-                action="hold", quantity=0, confidence=100.0, reasoning="No valid trade available"
+                action="hold", quantity=0, confidence=100, reasoning="No valid trade available"
             )
         else:
             tickers_for_llm.append(t)
@@ -244,7 +244,7 @@ def generate_trading_decision(
         decisions = dict(prefilled_decisions)
         for t in tickers_for_llm:
             decisions[t] = PortfolioDecision(
-                action="hold", quantity=0, confidence=0.0, reasoning="Default decision: hold"
+                action="hold", quantity=0, confidence=0, reasoning="Default decision: hold"
             )
         return PortfolioManagerOutput(decisions=decisions)
 
@@ -256,7 +256,34 @@ def generate_trading_decision(
         default_factory=create_default_portfolio_output,
     )
 
-    # Merge prefilled holds with LLM results
+    # Merge prefilled holds with clamped LLM results
     merged = dict(prefilled_decisions)
-    merged.update(llm_out.decisions)
+    raw_decisions = getattr(llm_out, "decisions", None) or {}
+    for t in tickers_for_llm:
+        allowed_for_ticker = allowed_actions_full.get(t, {"hold": 0})
+        decision = raw_decisions.get(t)
+        if decision is None:
+            merged[t] = PortfolioDecision(
+                action="hold", quantity=0, confidence=0, reasoning="Default decision: hold"
+            )
+            continue
+
+        action = decision.action
+        if action not in allowed_for_ticker:
+            merged[t] = PortfolioDecision(
+                action="hold",
+                quantity=0,
+                confidence=int(decision.confidence),
+                reasoning=f"Clamped disallowed action '{action}' to hold",
+            )
+        else:
+            max_allowed = int(allowed_for_ticker[action])
+            clamped_qty = 0 if action == "hold" else max(0, min(int(decision.quantity), max_allowed))
+            merged[t] = PortfolioDecision(
+                action=action,
+                quantity=clamped_qty,
+                confidence=int(decision.confidence),
+                reasoning=decision.reasoning,
+            )
+
     return PortfolioManagerOutput(decisions=merged)

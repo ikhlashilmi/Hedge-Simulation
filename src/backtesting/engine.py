@@ -108,8 +108,6 @@ class BacktestEngine:
             lookback_start = (current_date - relativedelta(months=1)).strftime("%Y-%m-%d")
             current_date_str = current_date.strftime("%Y-%m-%d")
             previous_date_str = (current_date - relativedelta(days=1)).strftime("%Y-%m-%d")
-            if lookback_start == current_date_str:
-                continue
 
             try:
                 current_prices: Dict[str, float] = {}
@@ -161,7 +159,14 @@ class BacktestEngine:
                 "Net Exposure": exposures["Net Exposure"],
                 "Long/Short Ratio": exposures["Long/Short Ratio"],
             }
-            self._portfolio_values.append(point)
+            if (
+                len(self._portfolio_values) == 1
+                and "Long Exposure" not in self._portfolio_values[0]
+                and self._portfolio_values[0]["Date"] == current_date
+            ):
+                self._portfolio_values[0] = point
+            else:
+                self._portfolio_values.append(point)
             
             # Build daily rows (stateless usage)
             rows = self._results.build_day_rows(

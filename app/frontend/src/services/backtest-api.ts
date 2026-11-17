@@ -1,13 +1,12 @@
 import { NodeStatus, useNodeContext } from '@/contexts/node-context';
 import { extractBaseAgentKey } from '@/data/node-mappings';
 import { flowConnectionManager } from '@/hooks/use-flow-connection';
+import { API_BASE_URL } from '@/lib/config';
 import {
   BacktestDayResult,
   BacktestPerformanceMetrics,
   BacktestRequest
 } from '@/services/types';
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export const backtestApi = {
   /**
@@ -25,6 +24,7 @@ export const backtestApi = {
     // Create the controller for aborting the request
     const controller = new AbortController();
     const { signal } = controller;
+    let completionResetTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Make a POST request to the backtest endpoint
     fetch(`${API_BASE_URL}/hedge-fund/backtest`, {
@@ -62,8 +62,8 @@ export const backtestApi = {
               break;
             }
             
-            // Decode the chunk and add to buffer
-            const chunk = decoder.decode(value, { stream: true });
+            // Decode the chunk, normalize CRLF, and add to buffer
+            const chunk = decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
             buffer += chunk;
             
             // Process any complete events in the buffer (separated by double newlines)
@@ -76,11 +76,15 @@ export const backtestApi = {
               try {
                 // Parse the event type and data from the SSE format
                 const eventTypeMatch = eventText.match(/^event: (.+)$/m);
-                const dataMatch = eventText.match(/^data: (.+)$/m);
+                const dataPayload = eventText
+                  .split('\n')
+                  .filter(line => line.startsWith('data:'))
+                  .map(line => line.slice(5).trimStart())
+                  .join('\n');
                 
-                if (eventTypeMatch && dataMatch) {
-                  const eventType = eventTypeMatch[1];
-                  const eventData = JSON.parse(dataMatch[1]);
+                if (eventTypeMatch && dataPayload) {
+                  const eventType = eventTypeMatch[1].trim();
+                  const eventData = JSON.parse(dataPayload);
                   
                   console.log(`Parsed backtest ${eventType} event:`, eventData);
                   
@@ -182,7 +186,11 @@ export const backtestApi = {
                         });
 
                         // Auto-cleanup completed connections after a delay
-                        setTimeout(() => {
+                        if (completionResetTimer) {
+                          clearTimeout(completionResetTimer);
+                        }
+                        completionResetTimer = setTimeout(() => {
+                          completionResetTimer = null;
                           const currentConnection = flowConnectionManager.getConnection(flowId);
                           if (currentConnection.state === 'completed') {
                             flowConnectionManager.setConnection(flowId, {
@@ -275,6 +283,10 @@ export const backtestApi = {
 
     // Return abort function
     return () => {
+      if (completionResetTimer) {
+        clearTimeout(completionResetTimer);
+        completionResetTimer = null;
+      }
       controller.abort();
       // Update connection state when manually aborted
       if (flowId) {

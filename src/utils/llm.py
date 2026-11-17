@@ -1,6 +1,8 @@
 """Helper functions for LLM"""
 
 import json
+import time
+from typing import Any
 from pydantic import BaseModel
 from src.llm.models import get_model, get_model_info
 from src.utils.progress import progress
@@ -8,7 +10,7 @@ from src.graph.state import AgentState
 
 
 def call_llm(
-    prompt: any,
+    prompt: Any,
     pydantic_model: type[BaseModel],
     agent_name: str | None = None,
     state: AgentState | None = None,
@@ -48,14 +50,14 @@ def call_llm(
     model_info = get_model_info(model_name, model_provider)
     llm = get_model(model_name, model_provider, api_keys)
 
-    # For non-JSON support models, we can use structured output
+    # For JSON-capable models, enable structured output
     if not (model_info and not model_info.has_json_mode()):
         llm = llm.with_structured_output(
             pydantic_model,
             method="json_mode",
         )
 
-    # Call the LLM with retries
+    # Call the LLM with retries and exponential backoff
     for attempt in range(max_retries):
         try:
             # Call the LLM
@@ -79,6 +81,8 @@ def call_llm(
                 if default_factory:
                     return default_factory()
                 return create_default_response(pydantic_model)
+
+            time.sleep(2 ** attempt)
 
     # This should never be reached due to the retry logic above
     return create_default_response(pydantic_model)
@@ -107,7 +111,7 @@ def create_default_response(model_class: type[BaseModel]) -> BaseModel:
 
 
 def extract_json_from_response(content: str) -> dict | None:
-    """Extracts JSON from markdown-formatted response."""
+    """Extracts JSON from a markdown-fenced or plain JSON response."""
     try:
         json_start = content.find("```json")
         if json_start != -1:
@@ -116,6 +120,11 @@ def extract_json_from_response(content: str) -> dict | None:
             if json_end != -1:
                 json_text = json_text[:json_end].strip()
                 return json.loads(json_text)
+
+        first_brace = content.find("{")
+        last_brace = content.rfind("}")
+        if first_brace != -1 and last_brace > first_brace:
+            return json.loads(content[first_brace : last_brace + 1])
     except Exception as e:
         print(f"Error extracting JSON from response: {e}")
     return None

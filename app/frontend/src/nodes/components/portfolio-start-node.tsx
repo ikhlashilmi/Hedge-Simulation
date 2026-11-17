@@ -1,6 +1,6 @@
 import { useReactFlow, type NodeProps } from '@xyflow/react';
 import { ChevronDown, PieChart, Play, Plus, Square, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { CardContent } from '@/components/ui/card';
@@ -39,25 +39,33 @@ const runModes = [
   { value: 'backtest', label: 'Backtest' },
 ];
 
+const DEFAULT_POSITIONS: PortfolioPosition[] = [
+  { ticker: '', quantity: '', tradePrice: '' },
+];
+
 export function PortfolioStartNode({
   data,
   selected,
   id,
   isConnectable,
 }: NodeProps<PortfolioStartNode>) {
-  // Calculate default dates
-  const today = new Date();
-  const threeMonthsAgo = new Date(today);
-  threeMonthsAgo.setMonth(today.getMonth() - 3);
-  
+  // Calculate default dates once on mount
+  const { defaultStartDate, defaultEndDate } = useMemo(() => {
+    const today = new Date();
+    const threeMonthsAgo = new Date(today);
+    threeMonthsAgo.setMonth(today.getMonth() - 3);
+    return {
+      defaultStartDate: threeMonthsAgo.toISOString().split('T')[0],
+      defaultEndDate: today.toISOString().split('T')[0],
+    };
+  }, []);
+
   // Use persistent state hooks
-  const [positions, setPositions] = useNodeState<PortfolioPosition[]>(id, 'positions', [
-    { ticker: '', quantity: '', tradePrice: '' },
-  ]);
+  const [positions, setPositions] = useNodeState<PortfolioPosition[]>(id, 'positions', DEFAULT_POSITIONS);
   const [initialCash, setInitialCash] = useNodeState(id, 'initialCash', '100000');
   const [runMode, setRunMode] = useNodeState(id, 'runMode', 'single');
-  const [startDate, setStartDate] = useNodeState(id, 'startDate', threeMonthsAgo.toISOString().split('T')[0]);
-  const [endDate, setEndDate] = useNodeState(id, 'endDate', today.toISOString().split('T')[0]);
+  const [startDate, setStartDate] = useNodeState(id, 'startDate', defaultStartDate);
+  const [endDate, setEndDate] = useNodeState(id, 'endDate', defaultEndDate);
   const [open, setOpen] = useState(false);
   
   const { currentFlowId } = useFlowContext();
@@ -107,9 +115,7 @@ export function PortfolioStartNode({
   }, [flowId, recoverFlowState]);
   
   const handlePositionChange = (index: number, field: keyof PortfolioPosition, value: string) => {
-    const newPositions = [...positions];
-    newPositions[index][field] = value;
-    setPositions(newPositions);
+    setPositions(positions.map((pos, i) => (i === index ? { ...pos, [field]: value } : pos)));
   };
 
   const addPosition = () => {
@@ -246,8 +252,8 @@ export function PortfolioStartNode({
         // No global model - each agent uses its own model or system default
         model_name: undefined,
         model_provider: undefined,
-        start_date: threeMonthsAgo.toISOString().split('T')[0],
-        end_date: today.toISOString().split('T')[0],
+        start_date: startDate || defaultStartDate,
+        end_date: endDate || defaultEndDate,
         initial_cash: parseFloat(initialCash) || 100000,
         // Pass portfolio positions to backend
         portfolio_positions: portfolioPositions,

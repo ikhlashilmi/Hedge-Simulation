@@ -1,31 +1,38 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
-from datetime import datetime
 
 from app.backend.database.models import ApiKey
+from app.backend.services.crypto import decrypt_secret, encrypt_secret, mask_secret
 
 
 class ApiKeyRepository:
     """Repository for API key database operations"""
-    
+
     def __init__(self, db: Session):
         self.db = db
 
+    @staticmethod
+    def _is_masked_placeholder(incoming_value: str, existing_plain: str) -> bool:
+        return incoming_value == "****" or (bool(existing_plain) and incoming_value == mask_secret(existing_plain))
+
     def create_or_update_api_key(
-        self, 
-        provider: str, 
-        key_value: str, 
-        description: str = None, 
+        self,
+        provider: str,
+        key_value: str,
+        description: str = None,
         is_active: bool = True
     ) -> ApiKey:
         """Create a new API key or update existing one"""
-        # Check if API key already exists for this provider
         existing_key = self.db.query(ApiKey).filter(ApiKey.provider == provider).first()
-        
+
         if existing_key:
-            # Update existing key
-            existing_key.key_value = key_value
+            existing_plain = decrypt_secret(existing_key.key_value)
+            if self._is_masked_placeholder(key_value, existing_plain):
+                # Preserve existing secret and ensure legacy plaintext rows are upgraded
+                existing_key.key_value = encrypt_secret(existing_plain)
+            else:
+                existing_key.key_value = encrypt_secret(key_value)
             existing_key.description = description
             existing_key.is_active = is_active
             existing_key.updated_at = func.now()
@@ -33,10 +40,9 @@ class ApiKeyRepository:
             self.db.refresh(existing_key)
             return existing_key
         else:
-            # Create new key
             api_key = ApiKey(
                 provider=provider,
-                key_value=key_value,
+                key_value=encrypt_secret(key_value),
                 description=description,
                 is_active=is_active
             )
@@ -45,12 +51,12 @@ class ApiKeyRepository:
             self.db.refresh(api_key)
             return api_key
 
-    def get_api_key_by_provider(self, provider: str) -> Optional[ApiKey]:
+    def get_api_key_by_provider(self, provider: str, include_inactive: bool = False) -> Optional[ApiKey]:
         """Get API key by provider name"""
-        return self.db.query(ApiKey).filter(
-            ApiKey.provider == provider,
-            ApiKey.is_active == True
-        ).first()
+        query = self.db.query(ApiKey).filter(ApiKey.provider == provider)
+        if not include_inactive:
+            query = query.filter(ApiKey.is_active == True)
+        return query.first()
 
     def get_all_api_keys(self, include_inactive: bool = False) -> List[ApiKey]:
         """Get all API keys"""
@@ -60,10 +66,10 @@ class ApiKeyRepository:
         return query.order_by(ApiKey.provider).all()
 
     def update_api_key(
-        self, 
-        provider: str, 
-        key_value: str = None, 
-        description: str = None, 
+        self,
+        provider: str,
+        key_value: str = None,
+        description: str = None,
         is_active: bool = None
     ) -> Optional[ApiKey]:
         """Update an existing API key"""
@@ -72,12 +78,16 @@ class ApiKeyRepository:
             return None
 
         if key_value is not None:
-            api_key.key_value = key_value
+            existing_plain = decrypt_secret(api_key.key_value)
+            if self._is_masked_placeholder(key_value, existing_plain):
+                api_key.key_value = encrypt_secret(existing_plain)
+            else:
+                api_key.key_value = encrypt_secret(key_value)
         if description is not None:
             api_key.description = description
         if is_active is not None:
             api_key.is_active = is_active
-        
+
         api_key.updated_at = func.now()
         self.db.commit()
         self.db.refresh(api_key)

@@ -1,7 +1,9 @@
+import asyncio
+import json
+import logging
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-import asyncio
 
 from app.backend.database import get_db
 from app.backend.models.schemas import ErrorResponse, HedgeFundRequest, BacktestRequest, BacktestDayResult, BacktestPerformanceMetrics
@@ -13,7 +15,25 @@ from app.backend.services.api_key_service import ApiKeyService
 from src.utils.progress import progress
 from src.utils.analysts import get_agents_list
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hedge-fund")
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
+
+
+async def _wait_for_disconnect(request: Request) -> bool:
+    """Wait for client disconnect and return True when it happens."""
+    try:
+        while True:
+            message = await request.receive()
+            if message["type"] == "http.disconnect":
+                return True
+    except Exception:
+        return True
+
 
 @router.post(
     path="/run",
@@ -48,28 +68,17 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
         if hasattr(model_provider, "value"):
             model_provider = model_provider.value
 
-        # Function to detect client disconnection
-        async def wait_for_disconnect():
-            """Wait for client disconnect and return True when it happens"""
-            try:
-                while True:
-                    message = await request.receive()
-                    if message["type"] == "http.disconnect":
-                        return True
-            except Exception:
-                return True
-
         # Set up streaming response
         async def event_generator():
-            # Queue for progress updates
+            loop = asyncio.get_running_loop()
             progress_queue = asyncio.Queue()
             run_task = None
             disconnect_task = None
 
-            # Simple handler to add updates to the queue
+            # Thread-safe handler to add updates to the queue
             def progress_handler(agent_name, ticker, status, analysis, timestamp):
                 event = ProgressUpdateEvent(agent=agent_name, ticker=ticker, status=status, timestamp=timestamp, analysis=analysis)
-                progress_queue.put_nowait(event)
+                loop.call_soon_threadsafe(progress_queue.put_nowait, event)
 
             # Register our handler with the progress tracker
             progress.register_handler(progress_handler)
@@ -88,18 +97,17 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                         request=request_data,  # Pass the full request for agent-specific model access
                     )
                 )
-                
+
                 # Start the disconnect detection task
-                disconnect_task = asyncio.create_task(wait_for_disconnect())
-                
+                disconnect_task = asyncio.create_task(_wait_for_disconnect(request))
+
                 # Send initial message
                 yield StartEvent().to_sse()
 
                 # Stream progress updates until run_task completes or client disconnects
                 while not run_task.done():
-                    # Check if client disconnected
                     if disconnect_task.done():
-                        print("Client disconnected, cancelling hedge fund execution")
+                        logger.info("Client disconnected, cancelling hedge fund execution")
                         run_task.cancel()
                         try:
                             await run_task
@@ -107,29 +115,37 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                             pass
                         return
 
-                    # Either get a progress update or wait a bit
                     try:
                         event = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
                         yield event.to_sse()
                     except asyncio.TimeoutError:
-                        # Just continue the loop
                         pass
 
                 # Get the final result
                 try:
                     result = await run_task
                 except asyncio.CancelledError:
-                    print("Task was cancelled")
+                    logger.info("Task was cancelled")
                     return
+
+                # Drain any remaining queued progress updates before finishing
+                await asyncio.sleep(0)
+                while not progress_queue.empty():
+                    yield progress_queue.get_nowait().to_sse()
 
                 if not result or not result.get("messages"):
                     yield ErrorEvent(message="Failed to generate hedge fund decisions").to_sse()
                     return
 
+                decisions = parse_hedge_fund_response(result.get("messages", [])[-1].content)
+                if decisions is None:
+                    yield ErrorEvent(message="Failed to parse hedge fund decisions").to_sse()
+                    return
+
                 # Send the final result
                 final_data = CompleteEvent(
                     data={
-                        "decisions": parse_hedge_fund_response(result.get("messages", [])[-1].content),
+                        "decisions": decisions,
                         "analyst_signals": result.get("data", {}).get("analyst_signals", {}),
                         "current_prices": result.get("data", {}).get("current_prices", {}),
                     }
@@ -137,10 +153,9 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                 yield final_data.to_sse()
 
             except asyncio.CancelledError:
-                print("Event generator cancelled")
+                logger.info("Event generator cancelled")
                 return
             finally:
-                # Clean up
                 progress.unregister_handler(progress_handler)
                 if run_task and not run_task.done():
                     run_task.cancel()
@@ -151,13 +166,14 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                 if disconnect_task and not disconnect_task.done():
                     disconnect_task.cancel()
 
-        # Return a streaming response
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        return StreamingResponse(event_generator(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred while processing the request: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("An error occurred while processing the hedge fund run request")
+        raise HTTPException(status_code=500, detail="An error occurred while processing the request")
+
 
 @router.post(
     path="/backtest",
@@ -182,9 +198,9 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
 
         # Create the portfolio (same as /run endpoint)
         portfolio = create_portfolio(
-            request_data.initial_capital, 
-            request_data.margin_requirement, 
-            request_data.tickers, 
+            request_data.initial_capital,
+            request_data.margin_requirement,
+            request_data.tickers,
             request_data.portfolio_positions
         )
 
@@ -205,19 +221,9 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
             request=request_data,  # Pass the full request for agent-specific model access
         )
 
-        # Function to detect client disconnection
-        async def wait_for_disconnect():
-            """Wait for client disconnect and return True when it happens"""
-            try:
-                while True:
-                    message = await request.receive()
-                    if message["type"] == "http.disconnect":
-                        return True
-            except Exception:
-                return True
-
         # Set up streaming response
         async def event_generator():
+            loop = asyncio.get_running_loop()
             progress_queue = asyncio.Queue()
             backtest_task = None
             disconnect_task = None
@@ -225,7 +231,7 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
             # Global progress handler to capture individual agent updates during backtest
             def progress_handler(agent_name, ticker, status, analysis, timestamp):
                 event = ProgressUpdateEvent(agent=agent_name, ticker=ticker, status=status, timestamp=timestamp, analysis=analysis)
-                progress_queue.put_nowait(event)
+                loop.call_soon_threadsafe(progress_queue.put_nowait, event)
 
             # Progress callback to handle backtest-specific updates
             def progress_callback(update):
@@ -237,15 +243,11 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
                         timestamp=None,
                         analysis=None
                     )
-                    progress_queue.put_nowait(event)
+                    loop.call_soon_threadsafe(progress_queue.put_nowait, event)
                 elif update["type"] == "backtest_result":
-                    # Convert day result to a streaming event
                     backtest_result = BacktestDayResult(**update["data"])
-                    
-                    # Send the full day result data as JSON in the analysis field
-                    import json
                     analysis_data = json.dumps(update["data"])
-                    
+
                     event = ProgressUpdateEvent(
                         agent="backtest",
                         ticker=None,
@@ -253,28 +255,25 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
                         timestamp=None,
                         analysis=analysis_data
                     )
-                    progress_queue.put_nowait(event)
+                    loop.call_soon_threadsafe(progress_queue.put_nowait, event)
 
             # Register our handler with the progress tracker to capture agent updates
             progress.register_handler(progress_handler)
-            
+
             try:
-                # Start the backtest in a background task
                 backtest_task = asyncio.create_task(
                     backtest_service.run_backtest_async(progress_callback=progress_callback)
                 )
-                
-                # Start the disconnect detection task
-                disconnect_task = asyncio.create_task(wait_for_disconnect())
-                
+
+                disconnect_task = asyncio.create_task(_wait_for_disconnect(request))
+
                 # Send initial message
                 yield StartEvent().to_sse()
 
                 # Stream progress updates until backtest_task completes or client disconnects
                 while not backtest_task.done():
-                    # Check if client disconnected
                     if disconnect_task.done():
-                        print("Client disconnected, cancelling backtest execution")
+                        logger.info("Client disconnected, cancelling backtest execution")
                         backtest_task.cancel()
                         try:
                             await backtest_task
@@ -282,26 +281,28 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
                             pass
                         return
 
-                    # Either get a progress update or wait a bit
                     try:
                         event = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
                         yield event.to_sse()
                     except asyncio.TimeoutError:
-                        # Just continue the loop
                         pass
 
                 # Get the final result
                 try:
                     result = await backtest_task
                 except asyncio.CancelledError:
-                    print("Backtest task was cancelled")
+                    logger.info("Backtest task was cancelled")
                     return
+
+                # Drain any remaining queued progress updates before finishing
+                await asyncio.sleep(0)
+                while not progress_queue.empty():
+                    yield progress_queue.get_nowait().to_sse()
 
                 if not result:
                     yield ErrorEvent(message="Failed to complete backtest").to_sse()
                     return
 
-                # Send the final result
                 performance_metrics = BacktestPerformanceMetrics(**result["performance_metrics"])
                 final_data = CompleteEvent(
                     data={
@@ -313,10 +314,9 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
                 yield final_data.to_sse()
 
             except asyncio.CancelledError:
-                print("Backtest event generator cancelled")
+                logger.info("Backtest event generator cancelled")
                 return
             finally:
-                # Clean up
                 progress.unregister_handler(progress_handler)
                 if backtest_task and not backtest_task.done():
                     backtest_task.cancel()
@@ -327,13 +327,13 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
                 if disconnect_task and not disconnect_task.done():
                     disconnect_task.cancel()
 
-        # Return a streaming response
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        return StreamingResponse(event_generator(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred while processing the backtest request: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("An error occurred while processing the backtest request")
+        raise HTTPException(status_code=500, detail="An error occurred while processing the backtest request")
 
 
 @router.get(
@@ -347,6 +347,7 @@ async def get_agents():
     """Get the list of available agents."""
     try:
         return {"agents": get_agents_list()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve agents: {str(e)}")
+    except Exception:
+        logger.exception("Failed to retrieve agents")
+        raise HTTPException(status_code=500, detail="Failed to retrieve agents")
 

@@ -54,8 +54,11 @@ class FlowConnectionManager {
   }
 
   // Add listener for connection changes
-  addListener(listener: () => void): void {
+  addListener(listener: () => void): () => void {
     this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   // Remove listener

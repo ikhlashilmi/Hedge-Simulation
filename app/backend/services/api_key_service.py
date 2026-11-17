@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from typing import Dict, Optional
 from app.backend.repositories.api_key_repository import ApiKeyRepository
+from app.backend.services.crypto import decrypt_secret
 
 
 class ApiKeyService:
@@ -15,9 +16,13 @@ class ApiKeyService:
         suitable for injecting into requests
         """
         api_keys = self.repository.get_all_api_keys(include_inactive=False)
-        return {key.provider: key.key_value for key in api_keys}
+        return {
+            key.provider: decrypted
+            for key in api_keys
+            if (decrypted := decrypt_secret(key.key_value))
+        }
     
     def get_api_key(self, provider: str) -> Optional[str]:
         """Get a specific API key by provider"""
         api_key = self.repository.get_api_key_by_provider(provider)
-        return api_key.key_value if api_key else None 
+        return decrypt_secret(api_key.key_value) if api_key else None

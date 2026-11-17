@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 // =============================================================================
 // FLOW STATE MANAGER - Handles global state and flow isolation
@@ -196,14 +196,18 @@ export function useNodeState<T>(
   stateKey: string,
   defaultValue: T
 ): [T, (value: T | ((prev: T) => T)) => void] {
-  
-  // Initialize with stored value or default
+  const defaultValueRef = useRef<T>(defaultValue);
+  defaultValueRef.current = defaultValue;
+
+  // Initialize with stored value or default without unstable defaultValue deps
   const getStoredValue = useCallback((): T => {
     const storedValue = flowStateManager.getNodeState(nodeId, stateKey);
-    return storedValue !== undefined ? storedValue : defaultValue;
-  }, [nodeId, stateKey, defaultValue]);
+    return storedValue !== undefined ? storedValue : defaultValueRef.current;
+  }, [nodeId, stateKey]);
 
   const [value, setValue] = useState<T>(getStoredValue);
+  const valueRef = useRef<T>(value);
+  valueRef.current = value;
   const [, forceUpdate] = useState({});
 
   // Handle flow changes - reset to stored value for new flow
@@ -212,6 +216,7 @@ export function useNodeState<T>(
       // Use setTimeout to defer the state update to avoid updating during render
       setTimeout(() => {
         const newValue = getStoredValue();
+        valueRef.current = newValue;
         setValue(newValue);
         forceUpdate({}); // Force re-render
       }, 0);
@@ -230,6 +235,7 @@ export function useNodeState<T>(
           setValue(prevValue => {
             if (prevValue !== storedValue) {
               console.debug(`[useNodeState] Updated ${nodeId}.${stateKey}:`, storedValue);
+              valueRef.current = storedValue;
               return storedValue;
             }
             return prevValue;
@@ -241,16 +247,15 @@ export function useNodeState<T>(
     return unsubscribe;
   }, [nodeId, stateKey]);
 
-  // Persist value when it changes
+  // Persist value outside React's setState updater so StrictMode stays pure
   const setValueAndPersist = useCallback((newValue: T | ((prev: T) => T)) => {
-    setValue(prevValue => {
-      const finalValue = typeof newValue === 'function' 
-        ? (newValue as (prev: T) => T)(prevValue) 
-        : newValue;
-      
-      flowStateManager.setNodeState(nodeId, stateKey, finalValue);
-      return finalValue;
-    });
+    const finalValue = typeof newValue === 'function'
+      ? (newValue as (prev: T) => T)(valueRef.current)
+      : newValue;
+
+    valueRef.current = finalValue;
+    setValue(finalValue);
+    flowStateManager.setNodeState(nodeId, stateKey, finalValue);
   }, [nodeId, stateKey]);
 
   // Initialize stored state on mount or flow change
@@ -259,10 +264,10 @@ export function useNodeState<T>(
     if (storedValue === undefined) {
       // Use setTimeout to defer the state update to avoid updating during render
       setTimeout(() => {
-        flowStateManager.setNodeState(nodeId, stateKey, value);
+        flowStateManager.setNodeState(nodeId, stateKey, valueRef.current);
       }, 0);
     }
-  }, [nodeId, stateKey, value]);
+  }, [nodeId, stateKey]);
 
   return [value, setValueAndPersist];
 }

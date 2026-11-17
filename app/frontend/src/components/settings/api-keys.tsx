@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { apiKeysService } from '@/services/api-keys-api';
 import { Eye, EyeOff, Key, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface ApiKey {
   key: string;
@@ -80,6 +80,7 @@ export function ApiKeysSettings() {
   const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const maskedKeysRef = useRef<Record<string, string>>({});
 
   // Load API keys from backend on component mount
   useEffect(() => {
@@ -92,17 +93,18 @@ export function ApiKeysSettings() {
       setError(null);
       const apiKeysSummary = await apiKeysService.getAllApiKeys();
       
-      // Load actual key values for existing keys
+      // Load masked key values for existing keys
       const keysData: Record<string, string> = {};
       for (const summary of apiKeysSummary) {
         try {
-          const fullKey = await apiKeysService.getApiKey(summary.provider);
-          keysData[summary.provider] = fullKey.key_value;
+          const maskedKey = await apiKeysService.getApiKey(summary.provider);
+          keysData[summary.provider] = maskedKey.key_value;
         } catch (err) {
           console.warn(`Failed to load key for ${summary.provider}:`, err);
         }
       }
       
+      maskedKeysRef.current = { ...keysData };
       setApiKeys(keysData);
     } catch (err) {
       console.error('Failed to load API keys:', err);
@@ -119,16 +121,24 @@ export function ApiKeysSettings() {
       [key]: value
     }));
 
-    // Auto-save with debouncing
+    const trimmed = value.trim();
+    // Skip re-saving an unchanged masked display value
+    if (trimmed && trimmed === maskedKeysRef.current[key]) {
+      return;
+    }
+
+    // Auto-save
     try {
-      if (value.trim()) {
-        await apiKeysService.createOrUpdateApiKey({
+      if (trimmed) {
+        const saved = await apiKeysService.createOrUpdateApiKey({
           provider: key,
-          key_value: value.trim(),
+          key_value: trimmed,
           is_active: true
         });
+        maskedKeysRef.current[key] = saved.key_value;
       } else {
         // If value is empty, delete the key
+        delete maskedKeysRef.current[key];
         try {
           await apiKeysService.deleteApiKey(key);
         } catch (err) {
@@ -152,6 +162,7 @@ export function ApiKeysSettings() {
   const clearKey = async (key: string) => {
     try {
       await apiKeysService.deleteApiKey(key);
+      delete maskedKeysRef.current[key];
       setApiKeys(prev => {
         const newKeys = { ...prev };
         delete newKeys[key];

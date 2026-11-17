@@ -1,9 +1,10 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { API_BASE_URL } from '@/lib/config';
 import { cn } from '@/lib/utils';
 import { AlertTriangle, Brain, CheckCircle, Download, Play, RefreshCw, Server, Square, Trash2, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface OllamaStatus {
   installed: boolean;
@@ -41,7 +42,10 @@ export function OllamaSettings() {
   const [error, setError] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, DownloadProgress>>({});
   const [activeDownloads, setActiveDownloads] = useState<Set<string>>(new Set());
-  const [pollIntervals, setPollIntervals] = useState<Set<NodeJS.Timeout>>(new Set());
+  const pollIntervalsRef = useRef<Set<ReturnType<typeof setInterval>>>(new Set());
+  const downloadControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const retryTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const isMountedRef = useRef(true);
   const [deleteConfirmation, setDeleteConfirmation] = useState<{
     isOpen: boolean;
     modelName: string;
@@ -64,7 +68,7 @@ export function OllamaSettings() {
 
   const fetchOllamaStatus = async () => {
     try {
-      const response = await fetch('http://localhost:8000/ollama/status');
+      const response = await fetch(`${API_BASE_URL}/ollama/status`);
       if (response.ok) {
         const status = await response.json();
         setOllamaStatus(status);
@@ -81,7 +85,7 @@ export function OllamaSettings() {
 
   const fetchRecommendedModels = async () => {
     try {
-      const response = await fetch('http://localhost:8000/ollama/models/recommended');
+      const response = await fetch(`${API_BASE_URL}/ollama/models/recommended`);
       if (response.ok) {
         const models = await response.json();
         setRecommendedModels(models);
@@ -97,7 +101,7 @@ export function OllamaSettings() {
     setActionLoading('start-server');
     setError(null);
     try {
-      const response = await fetch('http://localhost:8000/ollama/start', {
+      const response = await fetch(`${API_BASE_URL}/ollama/start`, {
         method: 'POST',
       });
       if (response.ok) {
@@ -117,7 +121,7 @@ export function OllamaSettings() {
     setActionLoading('stop-server');
     setError(null);
     try {
-      const response = await fetch('http://localhost:8000/ollama/stop', {
+      const response = await fetch(`${API_BASE_URL}/ollama/stop`, {
         method: 'POST',
       });
       if (response.ok) {
@@ -133,6 +137,40 @@ export function OllamaSettings() {
     setActionLoading(null);
   };
 
+  const scheduleManagedTimeout = (fn: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      retryTimeoutsRef.current.delete(id);
+      if (isMountedRef.current) {
+        fn();
+      }
+    }, ms);
+    retryTimeoutsRef.current.add(id);
+  };
+
+  const scheduleStatusRefreshWithRetry = (modelName: string, attempts = 0) => {
+    scheduleManagedTimeout(async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/ollama/status`);
+        if (!isMountedRef.current) return;
+        if (response.ok) {
+          const status = await response.json();
+          setOllamaStatus(status);
+          setError(null);
+          if (attempts < 5 && status && !status.available_models.includes(modelName)) {
+            scheduleStatusRefreshWithRetry(modelName, attempts + 1);
+          }
+        } else if (attempts < 5) {
+          scheduleStatusRefreshWithRetry(modelName, attempts + 1);
+        }
+      } catch (error) {
+        console.error('Failed to refresh status:', error);
+        if (attempts < 5) {
+          scheduleStatusRefreshWithRetry(modelName, attempts + 1);
+        }
+      }
+    }, 2000);
+  };
+
   const downloadModelWithProgress = async (modelName: string) => {
     setError(null);
     setActiveDownloads(prev => new Set(prev).add(modelName));
@@ -141,14 +179,18 @@ export function OllamaSettings() {
       [modelName]: { status: 'starting', percentage: 0, message: 'Initializing download...' }
     }));
 
+    const controller = new AbortController();
+    downloadControllersRef.current.set(modelName, controller);
+
     try {
       // Make a POST request to the progress endpoint which returns a streaming response
-      const response = await fetch('http://localhost:8000/ollama/models/download/progress', {
+      const response = await fetch(`${API_BASE_URL}/ollama/models/download/progress`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ model_name: modelName }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -162,9 +204,10 @@ export function OllamaSettings() {
         return;
       }
 
-      // Read the streaming response
+      // Read the streaming response with line buffering across chunks
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
+      let lineBuffer = '';
 
       if (reader) {
         try {
@@ -172,8 +215,9 @@ export function OllamaSettings() {
             const { done, value } = await reader.read();
             if (done) break;
 
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
+            lineBuffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+            const lines = lineBuffer.split('\n');
+            lineBuffer = lines.pop() || '';
 
             for (const line of lines) {
               if (line.startsWith('data: ')) {
@@ -181,7 +225,8 @@ export function OllamaSettings() {
                   const jsonData = line.slice(6).trim();
                   if (jsonData) {
                     const data = JSON.parse(jsonData);
-                    
+                    if (!isMountedRef.current) return;
+
                     setDownloadProgress(prev => ({
                       ...prev,
                       [modelName]: data
@@ -194,39 +239,13 @@ export function OllamaSettings() {
                         newSet.delete(modelName);
                         return newSet;
                       });
-                      // Immediately clean up progress display for completed downloads
                       setDownloadProgress(prev => {
                         const newProgress = { ...prev };
                         delete newProgress[modelName];
                         return newProgress;
                       });
-                      // Refresh status to show the new model with retry logic
-                      const refreshWithRetry = async (attempts = 0) => {
-                        try {
-                          const response = await fetch('http://localhost:8000/ollama/status');
-                          if (response.ok) {
-                            const status = await response.json();
-                            setOllamaStatus(status);
-                            setError(null);
-                            
-                            // Check if the model is now in the available models list
-                            if (attempts < 5 && status && !status.available_models.includes(modelName)) {
-                              // Wait a bit longer and try again
-                              setTimeout(() => refreshWithRetry(attempts + 1), 2000);
-                            }
-                          } else if (attempts < 5) {
-                            // If fetch failed, retry
-                            setTimeout(() => refreshWithRetry(attempts + 1), 2000);
-                          }
-                        } catch (error) {
-                          console.error('Failed to refresh status:', error);
-                          if (attempts < 5) {
-                            setTimeout(() => refreshWithRetry(attempts + 1), 2000);
-                          }
-                        }
-                      };
-                      setTimeout(() => refreshWithRetry(), 2000);
-                      return; // Exit the function
+                      scheduleStatusRefreshWithRetry(modelName);
+                      return;
                     } else if (data.status === 'error' || data.status === 'cancelled') {
                       setActiveDownloads(prev => {
                         const newSet = new Set(prev);
@@ -236,15 +255,14 @@ export function OllamaSettings() {
                       if (data.status === 'error') {
                         setError(`Download failed for ${modelName}: ${data.message || data.error}`);
                       }
-                      // Clean up progress display after 3 seconds for errors/cancellations
-                      setTimeout(() => {
+                      scheduleManagedTimeout(() => {
                         setDownloadProgress(prev => {
                           const newProgress = { ...prev };
                           delete newProgress[modelName];
                           return newProgress;
                         });
                       }, 3000);
-                      return; // Exit the function
+                      return;
                     }
                   }
                 } catch (e) {
@@ -258,23 +276,32 @@ export function OllamaSettings() {
         }
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
       console.error('Failed to download model with progress:', error);
-      setError(`Failed to download ${modelName}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setActiveDownloads(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(modelName);
-        return newSet;
-      });
+      if (isMountedRef.current) {
+        setError(`Failed to download ${modelName}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        setActiveDownloads(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(modelName);
+          return newSet;
+        });
+      }
+    } finally {
+      downloadControllersRef.current.delete(modelName);
     }
   };
 
   const performCancelDownload = async (modelName: string) => {
     setError(null);
     setCancellingDownloads(prev => new Set(prev).add(modelName));
-    
+    downloadControllersRef.current.get(modelName)?.abort();
+    downloadControllersRef.current.delete(modelName);
+
     try {
       // Call the backend to cancel the download
-      const response = await fetch(`http://localhost:8000/ollama/models/download/${encodeURIComponent(modelName)}`, {
+      const response = await fetch(`${API_BASE_URL}/ollama/models/download/${encodeURIComponent(modelName)}`, {
         method: 'DELETE',
       });
       
@@ -283,11 +310,9 @@ export function OllamaSettings() {
       } else {
         const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
         console.warn(`Failed to cancel download for ${modelName}: ${errorData.detail}`);
-        // Don't show error to user since the UI cleanup will still happen
       }
     } catch (error) {
       console.error('Failed to cancel download:', error);
-      // Don't show error to user since the UI cleanup will still happen
     }
     
     // Always clean up the UI state regardless of backend response
@@ -323,7 +348,7 @@ export function OllamaSettings() {
     setActionLoading(`delete-${modelName}`);
     setError(null);
     try {
-      const response = await fetch(`http://localhost:8000/ollama/models/${encodeURIComponent(modelName)}`, {
+      const response = await fetch(`${API_BASE_URL}/ollama/models/${encodeURIComponent(modelName)}`, {
         method: 'DELETE',
       });
       if (response.ok) {
@@ -372,7 +397,7 @@ export function OllamaSettings() {
 
     try {
       // Get all active downloads in one call instead of checking each model individually
-      const response = await fetch('http://localhost:8000/ollama/models/downloads/active');
+      const response = await fetch(`${API_BASE_URL}/ollama/models/downloads/active`);
       if (response.ok) {
         const activeDownloads = await response.json();
         
@@ -410,12 +435,14 @@ export function OllamaSettings() {
     
     // Poll for progress updates instead of starting a new stream
     const pollProgress = async () => {
+      if (!isMountedRef.current) return false;
       try {
         // Check all active downloads instead of individual model
-        const response = await fetch('http://localhost:8000/ollama/models/downloads/active');
+        const response = await fetch(`${API_BASE_URL}/ollama/models/downloads/active`);
         if (response.ok) {
           const activeDownloads = await response.json();
           const progress = activeDownloads[modelName];
+          if (!isMountedRef.current) return false;
           
           if (progress) {
             setDownloadProgress(prev => ({
@@ -430,38 +457,12 @@ export function OllamaSettings() {
                 newSet.delete(modelName);
                 return newSet;
               });
-              // Immediately clean up progress display for completed downloads
               setDownloadProgress(prev => {
                 const newProgress = { ...prev };
                 delete newProgress[modelName];
                 return newProgress;
               });
-              // Refresh status to show the new model with retry logic
-              const refreshWithRetry = async (attempts = 0) => {
-                try {
-                  const response = await fetch('http://localhost:8000/ollama/status');
-                  if (response.ok) {
-                    const status = await response.json();
-                    setOllamaStatus(status);
-                    setError(null);
-                    
-                    // Check if the model is now in the available models list
-                    if (attempts < 5 && status && !status.available_models.includes(modelName)) {
-                      // Wait a bit longer and try again
-                      setTimeout(() => refreshWithRetry(attempts + 1), 2000);
-                    }
-                  } else if (attempts < 5) {
-                    // If fetch failed, retry
-                    setTimeout(() => refreshWithRetry(attempts + 1), 2000);
-                  }
-                } catch (error) {
-                  console.error('Failed to refresh status:', error);
-                  if (attempts < 5) {
-                    setTimeout(() => refreshWithRetry(attempts + 1), 2000);
-                  }
-                }
-              };
-              setTimeout(() => refreshWithRetry(), 2000);
+              scheduleStatusRefreshWithRetry(modelName);
               return false; // Stop polling
             } else if (progress.status === 'error' || progress.status === 'cancelled') {
               setActiveDownloads(prev => {
@@ -472,8 +473,7 @@ export function OllamaSettings() {
               if (progress.status === 'error') {
                 setError(`Download failed for ${modelName}: ${progress.message || progress.error}`);
               }
-              // Clean up progress display after 3 seconds for errors/cancellations
-              setTimeout(() => {
+              scheduleManagedTimeout(() => {
                 setDownloadProgress(prev => {
                   const newProgress = { ...prev };
                   delete newProgress[modelName];
@@ -494,13 +494,12 @@ export function OllamaSettings() {
             return false; // Stop polling
           }
         } else {
-          // Error getting active downloads, stop polling
           console.error(`Error getting active downloads: ${response.status}`);
-          return false; // Stop polling
+          return false;
         }
       } catch (error) {
         console.error(`Error polling progress for ${modelName}:`, error);
-        return false; // Stop polling on error
+        return false;
       }
     };
 
@@ -509,26 +508,18 @@ export function OllamaSettings() {
       const shouldContinue = await pollProgress();
       if (!shouldContinue) {
         clearInterval(pollInterval);
-        setPollIntervals(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(pollInterval);
-          return newSet;
-        });
+        pollIntervalsRef.current.delete(pollInterval);
       }
     }, 2000);
 
     // Track the interval for cleanup
-    setPollIntervals(prev => new Set(prev).add(pollInterval));
+    pollIntervalsRef.current.add(pollInterval);
 
     // Do an initial poll
     const shouldContinue = await pollProgress();
     if (!shouldContinue) {
       clearInterval(pollInterval);
-      setPollIntervals(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(pollInterval);
-        return newSet;
-      });
+      pollIntervalsRef.current.delete(pollInterval);
     }
   };
 
@@ -543,12 +534,19 @@ export function OllamaSettings() {
     }
   }, [ollamaStatus?.running, recommendedModels.length]); // Only depend on running status and whether we have models
 
-  // Cleanup polling intervals on unmount
+  // Cleanup polling intervals, retry timers, and active streams on unmount only
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
-      pollIntervals.forEach(interval => clearInterval(interval));
+      isMountedRef.current = false;
+      pollIntervalsRef.current.forEach(interval => clearInterval(interval));
+      pollIntervalsRef.current.clear();
+      retryTimeoutsRef.current.forEach(timeout => clearTimeout(timeout));
+      retryTimeoutsRef.current.clear();
+      downloadControllersRef.current.forEach(controller => controller.abort());
+      downloadControllersRef.current.clear();
     };
-  }, [pollIntervals]);
+  }, []);
 
   const getStatusIcon = () => {
     if (!ollamaStatus) return <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />;

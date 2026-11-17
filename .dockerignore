@@ -21,8 +21,16 @@ __pycache__/
 # Logs and data
 logs/
 data/
+outputs/
 *.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Frontend dependencies and builds
+**/node_modules
+**/dist
 
 # OS specific
 .DS_Store
-Thumbs.db 
+Thumbs.db

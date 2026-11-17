@@ -269,32 +269,27 @@ def calculate_volatility_metrics(prices_df: pd.DataFrame, lookback_days: int = 6
 
 def calculate_volatility_adjusted_limit(annualized_volatility: float) -> float:
     """
-    Calculate position limit as percentage of portfolio based on volatility.
-    
-    Logic:
-    - Low volatility (<15%): Up to 25% allocation
-    - Medium volatility (15-30%): 15-20% allocation  
-    - High volatility (>30%): 10-15% allocation
-    - Very high volatility (>50%): Max 10% allocation
+    Calculate position limit as a continuous piecewise-linear percentage of portfolio based on volatility.
+
+    Knots (against 20% baseline):
+    - 0% volatility: 25% allocation (1.25x)
+    - 15% volatility: 20% allocation (1.00x)
+    - 30% volatility: 17% allocation (0.85x)
+    - 50%+ volatility: 10% allocation (0.50x)
     """
     base_limit = 0.20  # 20% baseline
-    
-    if annualized_volatility < 0.15:  # Low volatility
-        # Allow higher allocation for stable stocks
-        vol_multiplier = 1.25  # Up to 25%
-    elif annualized_volatility < 0.30:  # Medium volatility  
-        # Standard allocation with slight adjustment based on volatility
-        vol_multiplier = 1.0 - (annualized_volatility - 0.15) * 0.5  # 20% -> 12.5%
-    elif annualized_volatility < 0.50:  # High volatility
-        # Reduce allocation significantly
-        vol_multiplier = 0.75 - (annualized_volatility - 0.30) * 0.5  # 15% -> 5%
-    else:  # Very high volatility (>50%)
-        # Minimum allocation for very risky stocks
-        vol_multiplier = 0.50  # Max 10%
-    
-    # Apply bounds to ensure reasonable limits
-    vol_multiplier = max(0.25, min(1.25, vol_multiplier))  # 5% to 25% range
-    
+    vol = max(0.0, float(annualized_volatility))
+
+    if vol < 0.15:
+        vol_multiplier = 1.25 - (vol / 0.15) * 0.25  # 1.25 -> 1.00
+    elif vol < 0.30:
+        vol_multiplier = 1.00 - (vol - 0.15) * 1.00  # 1.00 -> 0.85
+    elif vol < 0.50:
+        vol_multiplier = 0.85 - (vol - 0.30) * 1.75  # 0.85 -> 0.50
+    else:
+        vol_multiplier = 0.50
+
+    vol_multiplier = max(0.25, min(1.25, vol_multiplier))
     return base_limit * vol_multiplier
 
 

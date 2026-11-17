@@ -46,15 +46,12 @@ class PerformanceMetricsCalculator:
         else:
             sharpe = 0.0
 
-        negative_excess = excess[excess < 0]
-        if len(negative_excess) > 0:
-            downside_std = negative_excess.std()
-            if downside_std > 1e-12:
-                sortino = float(np.sqrt(self.annual_trading_days) * (mean_excess / downside_std))
-            else:
-                sortino = float("inf") if mean_excess > 0 else 0.0
+        negative_excess = np.minimum(0.0, excess.to_numpy(dtype=float))
+        downside_std = float(np.sqrt(np.mean(np.square(negative_excess))))
+        if downside_std > 1e-12:
+            sortino = float(np.sqrt(self.annual_trading_days) * (mean_excess / downside_std))
         else:
-            sortino = float("inf") if mean_excess > 0 else 0.0
+            sortino = 0.0
 
         rolling_max = df["Portfolio Value"].cummax()
         drawdown = (df["Portfolio Value"] - rolling_max) / rolling_max

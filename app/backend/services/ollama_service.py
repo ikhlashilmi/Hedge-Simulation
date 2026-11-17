@@ -249,7 +249,12 @@ class OllamaService:
         try:
             command = ["ollama", "serve"]
             shell = system == "windows"
-            subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=shell)
+            subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=shell,
+            )
             
             return self._wait_for_server_start()
             
