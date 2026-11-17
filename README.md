@@ -1,158 +1,160 @@
-# AI Hedge Fund
+# Hedge Simulation
 
-This is a proof of concept for an AI-powered hedge fund.  The goal of this project is to explore the use of AI to make trading decisions.  This project is for **educational** purposes only and is not intended for real trading or investment.
+An AI-driven multi-agent hedge fund simulation platform. This project simulates an autonomous investment committee where specialized AI agents—inspired by legendary investors and analytical disciplines—collaborate to analyze market data, evaluate risk, and execute trading strategies.
 
-This system employs several agents working together:
+> **Disclaimer**: This project is strictly for **educational, experimental, and research purposes**. It does not execute real-world trades or provide financial advice.
 
-1. Aswath Damodaran Agent - The Dean of Valuation, focuses on story, numbers, and disciplined valuation
-2. Ben Graham Agent - The godfather of value investing, only buys hidden gems with a margin of safety
-3. Bill Ackman Agent - An activist investor, takes bold positions and pushes for change
-4. Cathie Wood Agent - The queen of growth investing, believes in the power of innovation and disruption
-5. Charlie Munger Agent - Warren Buffett's partner, only buys wonderful businesses at fair prices
-6. Michael Burry Agent - The Big Short contrarian who hunts for deep value
-7. Mohnish Pabrai Agent - The Dhandho investor, who looks for doubles at low risk
-8. Peter Lynch Agent - Practical investor who seeks "ten-baggers" in everyday businesses
-9. Phil Fisher Agent - Meticulous growth investor who uses deep "scuttlebutt" research 
-10. Rakesh Jhunjhunwala Agent - The Big Bull of India
-11. Stanley Druckenmiller Agent - Macro legend who hunts for asymmetric opportunities with growth potential
-12. Warren Buffett Agent - The oracle of Omaha, seeks wonderful companies at a fair price
-13. Valuation Agent - Calculates the intrinsic value of a stock and generates trading signals
-14. Sentiment Agent - Analyzes market sentiment and generates trading signals
-15. Fundamentals Agent - Analyzes fundamental data and generates trading signals
-16. Technicals Agent - Analyzes technical indicators and generates trading signals
-17. Risk Manager - Calculates risk metrics and sets position limits
-18. Portfolio Manager - Makes final trading decisions and generates orders
+---
 
-<img width="1042" alt="Screenshot 2025-03-22 at 6 19 07 PM" src="https://github.com/user-attachments/assets/cbae3dcf-b571-490d-b0ad-3f0f035ac0d4" />
+## Architecture Overview
 
-Note: the system does not actually make any trades.
+The system models a complete investment firm pipeline through collaborative agents:
 
-[![Twitter Follow](https://img.shields.io/twitter/follow/virattt?style=social)](https://twitter.com/virattt)
+### 1. Investment Personas
+- **Warren Buffett**: Focuses on high-quality businesses with strong economic moats and fair prices.
+- **Charlie Munger**: Emphasizes durable competitive advantages and avoiding mistakes.
+- **Ben Graham**: Deep value investing with strict margin of safety requirements.
+- **Aswath Damodaran**: Disciplined narrative and numbers valuation.
+- **Peter Lynch**: Searches for fast-growing businesses in everyday markets.
+- **Michael Burry**: Contrarian deep-value search for mispriced securities.
+- **Cathie Wood**: High-conviction disruptive innovation and high-growth technologies.
+- **Stanley Druckenmiller**: Macro-driven asymmetric upside opportunities.
+- **Bill Ackman**: Activist investment theses with operational catalysts.
+- **Phil Fisher**: Scuttlebutt qualitative growth analysis.
+- **Mohnish Pabrai**: Low-risk, high-uncertainty Dhandho investing.
+- **Rakesh Jhunjhunwala**: High-conviction compounders and growth trajectories.
 
-## Disclaimer
+### 2. Analytical & Execution Agents
+- **Valuation Agent**: Calculates intrinsic fair value metrics and discounts.
+- **Sentiment Agent**: Processes news, market psychology, and social sentiment.
+- **Fundamentals Agent**: Analyzes financial statements, balance sheets, and cash flows.
+- **Technicals Agent**: Computes momentum, moving averages, and technical indicators.
+- **Risk Manager**: Dynamically manages position sizing and volatility caps.
+- **Portfolio Manager**: Synthesizes all agent signals into final capital allocation orders.
 
-This project is for **educational and research purposes only**.
+---
 
-- Not intended for real trading or investment
-- No investment advice or guarantees provided
-- Creator assumes no liability for financial losses
-- Consult a financial advisor for investment decisions
-- Past performance does not indicate future results
+## Tech Stack
 
-By using this software, you agree to use it solely for learning purposes.
+- **Backend**: FastAPI (Python 3.11), SQLAlchemy, SQLite, Uvicorn, Server-Sent Events (SSE)
+- **Frontend**: React 18, Vite, TypeScript, Tailwind CSS, Radix UI, Lucide Icons
+- **Simulation & Core**: LangChain, Pydantic, Pandas, NumPy, Poetry
+- **LLM Support**: Local (Ollama) and Cloud (OpenAI, Anthropic, Groq, DeepSeek, Azure)
+- **Security**: Fernet encryption for API keys at rest, path traversal safeguards, secure CORS policies
 
-## Table of Contents
-- [How to Install](#how-to-install)
-- [How to Run](#how-to-run)
-  - [⌨️ Command Line Interface](#️-command-line-interface)
-  - [🖥️ Web Application](#️-web-application)
-- [How to Contribute](#how-to-contribute)
-- [Feature Requests](#feature-requests)
-- [License](#license)
+---
 
-## How to Install
+## Getting Started
 
-Before you can run the AI Hedge Fund, you'll need to install it and set up your API keys. These steps are common to both the full-stack web application and command line interface.
+### Prerequisites
 
-### 1. Clone the Repository
+- Python 3.11+
+- Node.js 18+ and npm
+- [Poetry](https://python-poetry.org/) (Python package manager)
+- (Optional) [Ollama](https://ollama.ai/) for running local LLMs
+
+### 1. Clone & Setup Environment
 
 ```bash
-git clone https://github.com/virattt/ai-hedge-fund.git
-cd ai-hedge-fund
+git clone https://github.com/ikhlashilmi/Hedge-Simulation.git
+cd Hedge-Simulation
 ```
 
-### 2. Set up API keys
+Copy the example environment file and configure your keys:
 
-Create a `.env` file for your API keys:
 ```bash
-# Create .env file for your API keys (in the root directory)
 cp .env.example .env
 ```
 
-Open and edit the `.env` file to add your API keys:
-```bash
-# For running LLMs hosted by openai (gpt-4o, gpt-4o-mini, etc.)
-OPENAI_API_KEY=your-openai-api-key
+Edit `.env` with your API keys:
 
-# For getting financial data to power the hedge fund
+```ini
+# At least one LLM provider is required (or run locally via Ollama)
+OPENAI_API_KEY=your-openai-api-key
+# GROQ_API_KEY=your-groq-api-key
+# ANTHROPIC_API_KEY=your-anthropic-api-key
+
+# Financial data provider (Free data available for AAPL, GOOGL, MSFT, NVDA, TSLA)
 FINANCIAL_DATASETS_API_KEY=your-financial-datasets-api-key
 ```
 
-**Important**: You must set at least one LLM API key (e.g. `OPENAI_API_KEY`, `GROQ_API_KEY`, `ANTHROPIC_API_KEY`, or `DEEPSEEK_API_KEY`) for the hedge fund to work. 
+### 2. Python Dependencies
 
-**Financial Data**: Data for AAPL, GOOGL, MSFT, NVDA, and TSLA is free and does not require an API key. For any other ticker, you will need to set the `FINANCIAL_DATASETS_API_KEY` in the .env file.
-
-## How to Run
-
-### ⌨️ Command Line Interface
-
-You can run the AI Hedge Fund directly via terminal. This approach offers more granular control and is useful for automation, scripting, and integration purposes.
-
-<img width="992" alt="Screenshot 2025-01-06 at 5 50 17 PM" src="https://github.com/user-attachments/assets/e8ca04bf-9989-4a7d-a8b4-34e04666663b" />
-
-#### Quick Start
-
-1. Install Poetry (if not already installed):
-```bash
-curl -sSL https://install.python-poetry.org | python3 -
-```
-
-2. Install dependencies:
 ```bash
 poetry install
 ```
 
-#### Run the AI Hedge Fund
+---
+
+## Running the Application
+
+### Option A: Web Application (Full-Stack)
+
+1. **Start the Backend API Server**:
+   ```bash
+   poetry run uvicorn app.backend.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+2. **Start the Frontend UI**:
+   ```bash
+   cd app/frontend
+   npm install
+   npm run dev
+   ```
+
+   Open your browser at `http://localhost:5173`.
+
+### Option B: Command Line Interface (CLI)
+
+Run the multi-agent decision cycle directly in your terminal:
+
 ```bash
+# Run with default cloud LLM
 poetry run python src/main.py --ticker AAPL,MSFT,NVDA
-```
 
-You can also specify a `--ollama` flag to run the AI hedge fund using local LLMs.
-
-```bash
+# Run with local models via Ollama
 poetry run python src/main.py --ticker AAPL,MSFT,NVDA --ollama
-```
 
-You can optionally specify the start and end dates to make decisions over a specific time period.
-
-```bash
+# Specify historical date ranges
 poetry run python src/main.py --ticker AAPL,MSFT,NVDA --start-date 2024-01-01 --end-date 2024-03-01
 ```
 
-#### Run the Backtester
+### Option C: Backtesting Engine
+
+Evaluate agent strategies against historical market data:
+
 ```bash
-poetry run python src/backtester.py --ticker AAPL,MSFT,NVDA
+poetry run python src/backtester.py --ticker AAPL,MSFT,NVDA --start-date 2024-01-01 --end-date 2024-06-01
 ```
 
-**Example Output:**
-<img width="941" alt="Screenshot 2025-01-06 at 5 47 52 PM" src="https://github.com/user-attachments/assets/00e794ea-8628-44e6-9a84-8f8a31ad3b47" />
+The backtester calculates:
+- Total Return & Benchmark Comparison
+- Sharpe Ratio & Sortino Ratio
+- Maximum Drawdown (MDD)
+- Trade-by-trade portfolio log
 
+---
 
-Note: The `--ollama`, `--start-date`, and `--end-date` flags work for the backtester, as well!
+## Project Structure
 
-### 🖥️ Web Application
+```
+Hedge-Simulation/
+├── app/
+│   ├── backend/          # FastAPI server, database repositories, API routes
+│   └── frontend/         # React + Vite web dashboard and flow visualizer
+├── src/
+│   ├── agents/           # Specialized investor and analytical agent personas
+│   ├── backtesting/      # Backtesting execution engine and financial metrics
+│   ├── data/             # Thread-safe cache and market data models
+│   ├── tools/            # Market data APIs and financial fetchers
+│   └── utils/            # Progress streaming, LLM client wrappers, helpers
+├── docker/               # Production Dockerfile and container configuration
+├── pyproject.toml        # Poetry dependencies and project metadata
+└── README.md
+```
 
-The new way to run the AI Hedge Fund is through our web application that provides a user-friendly interface. This is recommended for users who prefer visual interfaces over command line tools.
-
-Please see detailed instructions on how to install and run the web application [here](https://github.com/virattt/ai-hedge-fund/tree/main/app).
-
-<img width="1721" alt="Screenshot 2025-06-28 at 6 41 03 PM" src="https://github.com/user-attachments/assets/b95ab696-c9f4-416c-9ad1-51feb1f5374b" />
-
-
-## How to Contribute
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-**Important**: Please keep your pull requests small and focused.  This will make it easier to review and merge.
-
-## Feature Requests
-
-If you have a feature request, please open an [issue](https://github.com/virattt/ai-hedge-fund/issues) and make sure it is tagged with `enhancement`.
+---
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the [MIT License](LICENSE).
